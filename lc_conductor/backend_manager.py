@@ -9,6 +9,7 @@ from typing import Any, Literal, Optional, Tuple
 from fastapi import WebSocket
 import asyncio
 import os
+import traceback
 from loguru import logger
 from lc_conductor.callback_logger import CallbackLogger
 from concurrent.futures import ProcessPoolExecutor
@@ -71,7 +72,8 @@ class TaskManager:
             return
 
         # Log the exception details
-        msg = f"Background task failed with exception: {type(exc).__name__}: {exc}"
+        tb = "".join(traceback.format_exception(exc))
+        msg = f"Background task failed with exception: {type(exc).__name__}: {tb}"
         logger.error(msg)
         await self.websocket.send_json(
             {
@@ -81,11 +83,6 @@ class TaskManager:
                     "message": msg,
                 },
             }
-        )
-
-        # Log other exceptions for debugging
-        logger.exception(
-            f"Unexpected error in background task: {type(exc).__name__}: {exc}"
         )
 
         # Send a stopped message with error details to the websocket so the UI can react

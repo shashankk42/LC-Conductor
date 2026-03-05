@@ -25,7 +25,7 @@ from charge.utils.mcp_workbench_utils import (
 )
 
 from charge.utils.system_utils import check_server_paths
-from autogen_ext.tools.mcp import McpWorkbench, SseServerParams
+from autogen_ext.tools.mcp import McpWorkbench, StreamableHttpServerParams
 from charge.clients.autogen_utils import (
     _list_wb_tools,
 )
@@ -83,13 +83,13 @@ class ToolServer(BaseModel):
     def __str__(self):
         path_if_valid = f"/{self.path}" if self.path else ""
         protocol_if_valid = f"{self.protocol}" if self.protocol else "http://"
-        # Ensure path ends with /sse
-        sse_path_if_valid = (
+        # Ensure path ends with /mcp
+        mcp_path_if_valid = (
             path_if_valid
-            if path_if_valid.endswith("/sse")
-            else f"{path_if_valid.rstrip('/')}/sse"
+            if path_if_valid.endswith("/mcp")
+            else f"{path_if_valid.rstrip('/')}/mcp"
         )
-        return f"{protocol_if_valid}{self.address}:{self.port}{sse_path_if_valid}"
+        return f"{protocol_if_valid}{self.address}:{self.port}{mcp_path_if_valid}"
 
     def long_name(self):
         short_name = self.__str__()
@@ -277,7 +277,7 @@ async def _check_mcp_connectivity(url: str, timeout: float) -> List[Dict]:
     Connect to an MCP server and retrieve its tools list using existing workbench utilities.
 
     Args:
-        url: MCP server URL (should end with /sse)
+        url: MCP server URL (should end with /mcp)
         timeout: Connection timeout in seconds
 
     Returns:
@@ -288,16 +288,16 @@ async def _check_mcp_connectivity(url: str, timeout: float) -> List[Dict]:
     """
     from charge.utils.system_utils import check_url_exists
 
-    # Ensure URL ends with /sse
-    sse_url = url if url.endswith("/sse") else f"{url.rstrip('/')}/sse"
+    # Ensure URL ends with /mcp
+    mcp_url = url if url.endswith("/mcp") else f"{url.rstrip('/')}/mcp"
 
     # First do a quick check if the URL is reachable
-    if not check_url_exists(sse_url):
-        raise Exception(f"Server at {sse_url} is not reachable")
+    if not check_url_exists(mcp_url):
+        raise Exception(f"Server at {mcp_url} is not reachable")
 
     # Now use workbench utilities to connect and get tools
     try:
-        workbenches = await _setup_mcp_workbenches(paths=[], urls=[sse_url])
+        workbenches = await _setup_mcp_workbenches(paths=[], urls=[mcp_url])
 
         if not workbenches:
             raise Exception("Failed to create workbench for server")
@@ -350,12 +350,12 @@ async def validate_and_register_mcp_server(
     except ValueError as e:
         return {"status": "error", "error": str(e)}
 
-    # Ensure URL ends with /sse
-    sse_url = url if url.endswith("/sse") else f"{url.rstrip('/')}/sse"
+    # Ensure URL ends with /mcp
+    mcp_url = url if url.endswith("/mcp") else f"{url.rstrip('/')}/mcp"
 
     # Validate connectivity using existing utilities
     try:
-        tools = await _check_mcp_connectivity(sse_url, timeout)
+        tools = await _check_mcp_connectivity(mcp_url, timeout)
 
         # If validation successful, register the server
         if not name:
@@ -368,13 +368,13 @@ async def validate_and_register_mcp_server(
         return {
             "status": "connected",
             "tools": tools,
-            "url": sse_url,
+            "url": mcp_url,
             "registration": registration_result,
         }
 
     except Exception as e:
-        logger.error(f"Failed to validate MCP server at {sse_url}: {e}")
-        return {"status": "disconnected", "error": str(e), "url": sse_url}
+        logger.error(f"Failed to validate MCP server at {mcp_url}: {e}")
+        return {"status": "disconnected", "error": str(e), "url": mcp_url}
 
 
 async def check_registered_servers(filename: str) -> Dict[str, Dict]:
@@ -526,19 +526,21 @@ def list_server_urls() -> list[str]:
 
     assert server_urls is not None, "Server URLs must be registered"
     for url in server_urls:
-        assert url.endswith("/sse"), f"Server URL {url} must end with /sse"
+        assert url.endswith("/mcp"), f"Server URL {url} must end with /mcp"
 
     return server_urls
 
 
 async def list_server_tools(urls: list[str]):
-    workbenches = [McpWorkbench(SseServerParams(url=server)) for server in urls]
+    workbenches = [
+        McpWorkbench(StreamableHttpServerParams(url=server)) for server in urls
+    ]
     return await _list_wb_tools(workbenches)
 
 
 def get_asgi_app(mcp: FastMCP):
     asgi_app = (
-        getattr(mcp, "sse_app", None)
+        getattr(mcp, "mcp_app", None)
         or getattr(mcp, "asgi_app", None)
         or getattr(mcp, "_app", None)
     )
