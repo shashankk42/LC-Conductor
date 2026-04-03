@@ -7,6 +7,9 @@ from pydantic import Field
 class RunSettings:
     prompt_debugging: bool = Field(alias="promptDebugging", default=False)
 
+    # Retrosynthesis approach
+    use_ai_based: bool = Field(alias="useAiBased", default=True)
+
     # RSA settings
     use_rsa: bool = Field(alias="useRsa", default=False)
     rsa_mode: str = Field(alias="rsaMode", default="standalone")
