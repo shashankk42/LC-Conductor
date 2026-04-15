@@ -20,12 +20,59 @@ import asyncio
 from mcp.server.fastmcp import FastMCP
 
 from charge.utils.mcp_workbench_utils import (
-    _setup_mcp_workbenches,
-    _close_mcp_workbenches,
     list_mcp_tools_direct,
 )
 
-from charge.utils.system_utils import check_server_paths
+from charge.utils.system_utils import check_server_paths, check_url_exists
+
+
+def extract_bearer_token_from_headers(headers_obj) -> Optional[str]:
+    """
+    Extract bearer token (x-subtoken) from request or websocket headers.
+
+    This is a common helper to extract the wormhole community subtoken used for
+    MCP server authentication. Works with FastAPI Request objects, WebSocket objects,
+    or any object with a .headers attribute.
+
+    Args:
+        headers_obj: Object with .headers attribute (Request, WebSocket, etc.)
+                     Can also be a dict-like headers object directly.
+
+    Returns:
+        Bearer token string if found, None otherwise
+    """
+    # Handle dict-like headers directly
+    if isinstance(headers_obj, dict):
+        token = headers_obj.get("x-subtoken")
+        if token:
+            logger.trace(f"Extracted bearer token from headers (length: {len(token)})")
+            return token
+        logger.trace("No bearer token (x-subtoken) found in headers")
+        return None
+
+    # Handle objects with .headers attribute (Request, WebSocket)
+    if hasattr(headers_obj, "headers"):
+        headers = headers_obj.headers
+        # Check if it's a dict-like object or has .get method
+        if hasattr(headers, "get"):
+            token = headers.get("x-subtoken")
+        elif "x-subtoken" in headers:
+            token = headers["x-subtoken"]
+        else:
+            token = None
+
+        if token:
+            logger.trace(f"Extracted bearer token from headers (length: {len(token)})")
+            return token
+        logger.trace("No bearer token (x-subtoken) found in headers")
+        return None
+
+    logger.warning(f"Cannot extract headers from object of type: {type(headers_obj)}")
+    return None
+
+
+class CheckServersRequest(BaseModel):
+    urls: list[str]
 
 
 class ValidateMCPServerRequest(BaseModel):
@@ -153,6 +200,7 @@ def register_url(
         )
 
     SERVERS.servers[key] = new_server
+
     if filename:
         # Check if file exists
         file_exists = os.path.exists(filename)
@@ -238,13 +286,42 @@ def register_tool_server(port, host, name, copilot_port, copilot_host):
             continue
 
 
-async def _check_mcp_connectivity(url: str, timeout: float) -> List[Dict]:
+async def check_mcp_servers_endpoint(request: Request, data: CheckServersRequest):
     """
-    Connect to an MCP server and retrieve its tools list using existing workbench utilities.
+    Check connectivity status of multiple MCP server URLs.
+    Returns status and tools for each URL.
+
+    Uses existing workbench utilities for validation.
+    """
+    from lc_conductor.tool_registration import _check_mcp_connectivity
+
+    # Extract bearer token from request headers
+    bearer_token = extract_bearer_token_from_headers(request)
+
+    results = {}
+
+    for url in data.urls:
+        try:
+            tools = await _check_mcp_connectivity(
+                url, timeout=5.0, bearer_token=bearer_token
+            )
+            results[url] = {"status": "connected", "tools": tools}
+        except Exception as e:
+            results[url] = {"status": "disconnected", "error": str(e)}
+
+    return {"results": results}
+
+
+async def _check_mcp_connectivity(
+    url: str, timeout: float, bearer_token: Optional[str]
+) -> List[Dict]:
+    """
+    Connect to an MCP server and retrieve its tools list using direct MCP client.
 
     Args:
         url: MCP server URL (should end with /mcp)
         timeout: Connection timeout in seconds
+        bearer_token: Optional bearer token for authentication
 
     Returns:
         List of tools with name and description
@@ -252,39 +329,36 @@ async def _check_mcp_connectivity(url: str, timeout: float) -> List[Dict]:
     Raises:
         Exception: If connection fails or server is unreachable
     """
-    from charge.utils.system_utils import check_url_exists
-
     # Ensure URL ends with /mcp
     mcp_url = url if url.endswith("/mcp") else f"{url.rstrip('/')}/mcp"
 
     # First do a quick check if the URL is reachable
-    if not check_url_exists(mcp_url):
+    if not check_url_exists(mcp_url, bearer_token):
         raise Exception(f"Server at {mcp_url} is not reachable")
 
-    # Now use workbench utilities to connect and get tools
     try:
-        workbenches = await _setup_mcp_workbenches(paths=[], urls=[mcp_url])
+        tools_by_server = await list_mcp_tools_direct(
+            urls=[mcp_url], paths=[], bearer_token=bearer_token
+        )
 
-        if not workbenches:
-            raise Exception("Failed to create workbench for server")
+        # Extract tools for this server
+        if mcp_url not in tools_by_server:
+            raise Exception(f"Failed to get tools from server {mcp_url}")
 
-        # Get tools from the workbench
-        tools = []
-        for workbench in workbenches:
-            try:
-                workbench_tools = await workbench.list_tools()
-                for tool in workbench_tools:
-                    tools.append(
-                        {
-                            "name": tool.get("name"),
-                            "description": tool.get("description"),
-                        }
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to list tools from workbench: {e}")
+        server_tools = tools_by_server[mcp_url]
 
-        # Clean up workbenches
-        await _close_mcp_workbenches(workbenches)
+        # Check for errors
+        if isinstance(server_tools, dict) and "error" in server_tools:
+            raise Exception(server_tools["error"])
+
+        # Convert to expected format
+        tools = [
+            {
+                "name": tool.get("name"),
+                "description": tool.get("description", ""),
+            }
+            for tool in server_tools
+        ]
 
         return tools
 
@@ -295,7 +369,11 @@ async def _check_mcp_connectivity(url: str, timeout: float) -> List[Dict]:
 
 
 async def validate_and_register_mcp_server(
-    filename: str, url: str, name: Optional[str] = None, timeout: float = 10.0
+    filename: str,
+    url: str,
+    name: Optional[str] = None,
+    bearer_token: Optional[str] = None,
+    timeout: float = 10.0,
 ) -> Dict:
     """
     Validate an MCP server URL by connecting to it and listing tools.
@@ -315,7 +393,7 @@ async def validate_and_register_mcp_server(
 
     # Validate connectivity using existing utilities
     try:
-        tools = await _check_mcp_connectivity(mcp_url, timeout)
+        tools = await _check_mcp_connectivity(mcp_url, timeout, bearer_token)
 
         # If validation successful, register the server
         if not name:
@@ -335,7 +413,9 @@ async def validate_and_register_mcp_server(
         return {"status": "disconnected", "error": str(e), "url": url}
 
 
-async def check_registered_servers(filename: str) -> Dict[str, Dict]:
+async def check_registered_servers(
+    filename: str, bearer_token: Optional[str] = None
+) -> Dict[str, Dict]:
     """
     Check connectivity of all registered servers using existing utilities.
 
@@ -350,7 +430,9 @@ async def check_registered_servers(filename: str) -> Dict[str, Dict]:
     for key, server in SERVERS.servers.items():
         url = str(server)
         try:
-            tools = await _check_mcp_connectivity(url, timeout=5.0)
+            tools = await _check_mcp_connectivity(
+                url, timeout=5.0, bearer_token=bearer_token
+            )
             results[url] = {"status": "connected", "tools": tools}
         except Exception as e:
             results[url] = {"status": "disconnected", "error": str(e)}
@@ -397,15 +479,22 @@ def delete_registered_server(filename: str, url: str) -> Dict:
     }
 
 
-async def get_registered_servers(filename: str) -> Dict:
+async def get_registered_servers(filename: str, request: Request = None) -> Dict:
     """
     Get list of all registered MCP servers and their status.
 
     This endpoint aggregates server info and checks connectivity
     using existing validation utilities.
+
+    Args:
+        filename: Path to server cache file
+        request: Optional FastAPI Request object to extract bearer token from headers
     """
+    # Extract bearer token from request headers if provided
+    bearer_token = extract_bearer_token_from_headers(request) if request else None
+
     # Get connectivity status for all servers
-    statuses = await check_registered_servers(filename)
+    statuses = await check_registered_servers(filename, bearer_token=bearer_token)
 
     # Build response with server info and status
     servers = []
@@ -418,9 +507,6 @@ async def get_registered_servers(filename: str) -> Dict:
                 "id": key,
                 "url": url,
                 "name": server.name,
-                "address": server.address,
-                "port": server.port,
-                "path": server.path,
                 **status_info,
             }
         )
@@ -438,13 +524,23 @@ async def validate_mcp_server_endpoint(
     This endpoint uses the existing system_utils.check_url_exists() and
     mcp_workbench_utils for validation.
     """
+    # Extract bearer token from request headers
+    bearer_token = extract_bearer_token_from_headers(request)
+
     # Get client info for logging
     client_info = get_client_info(request)
     logger.info(f"validate request from {client_info} for MCP server: {data.url}")
 
-    result = await validate_and_register_mcp_server(filename, data.url, data.name)
+    result = await validate_and_register_mcp_server(
+        filename, data.url, data.name, bearer_token
+    )
 
     logger.info(f"Validate result: {result}")
+
+    # Return the updated server list so frontend can refresh
+    # This ensures the new server appears in the UI
+    if result.get("status") == "connected":
+        result["all_servers"] = list(SERVERS.servers.keys())
 
     return result
 
@@ -463,37 +559,59 @@ async def delete_mcp_server_endpoint(
     return result
 
 
-def list_server_urls() -> list[str]:
+def list_server_urls(bearer_token: Optional[str] = None) -> list[str]:
     server_urls = []
     invalid_keys = []
     for key, server in SERVERS.servers.items():
-        validated_server = check_server_paths(f"{server}")
-        if validated_server:
-            server_urls.append(f"{server}")
-        else:
-            logger.info(
-                f"Previously cached URL is no longer valid - removing {server.long_name()} from cache"
+        try:
+            validated_server = check_server_paths(
+                f"{server}", bearer_token=bearer_token
+            )
+            if validated_server:
+                server_urls.append(f"{server}")
+            else:
+                logger.info(
+                    f"Previously cached URL is no longer valid - removing {server.long_name()} from cache"
+                )
+                invalid_keys.append(key)
+        except Exception as e:
+            logger.warning(
+                f"Error validating cached server {server.long_name()}: {e}. Removing from cache."
             )
             invalid_keys.append(key)
 
     for key in invalid_keys:
         SERVERS.servers.pop(key)
 
-    assert server_urls is not None, "Server URLs must be registered"
-    for url in server_urls:
-        assert url.endswith("/mcp"), f"Server URL {url} must end with /mcp"
+    # Validate URL format but don't crash - just log warnings
+    if not server_urls:
+        logger.warning(
+            "No valid MCP server URLs found. Tools from MCP servers will not be available."
+        )
+    else:
+        for url in server_urls:
+            if not url.endswith("/mcp"):
+                logger.warning(
+                    f"Server URL {url} does not end with /mcp - this may cause connection issues"
+                )
 
     return server_urls
 
 
-async def list_server_tools(urls: list[str]):
-    wh_token = os.getenv("FLASK_WORMHOLE_TOKEN", None)
-    wh_header = {"X-Token": wh_token} if wh_token else {}
-
+async def list_server_tools(urls: list[str], bearer_token: Optional[str] = None):
     tool_list = []
-    mcp_server_tool_list = await list_mcp_tools_direct(urls=urls)
+    mcp_server_tool_list = await list_mcp_tools_direct(
+        urls=urls, bearer_token=bearer_token
+    )
 
     for server, tools in mcp_server_tool_list.items():
+        # Check if tools is an error dict instead of a list
+        if isinstance(tools, dict) and "error" in tools:
+            logger.warning(
+                f"Skipping MCP server {server} due to error: {tools['error']}"
+            )
+            continue
+
         logger.trace(f"MCP Server: {server}")
         for tool in tools:
             name = tool["name"]

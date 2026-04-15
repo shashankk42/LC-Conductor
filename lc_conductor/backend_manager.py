@@ -21,6 +21,7 @@ from functools import partial
 from lc_conductor.tool_registration import (
     list_server_urls,
     list_server_tools,
+    extract_bearer_token_from_headers,
 )
 from lc_conductor.backend_helper_function import RunSettings
 from lc_conductor.local_mcp_proxy import (
@@ -162,10 +163,23 @@ class ActionManager:
         self.websocket = task_manager.websocket
         self.builtin_tool_definitions = builtin_tool_definitions or []
         if not self.task_manager.configured_tool_servers:
-            self.task_manager.configured_tool_servers = [
-                ToolServerConfig(url=server_url, scope="backend")
-                for server_url in list_server_urls()
-            ]
+            # Sync configured_tool_servers with registered servers from SERVERS global
+            try:
+                server_urls = list_server_urls(bearer_token=self._get_wormhole_token())
+                self.task_manager.configured_tool_servers = [
+                    ToolServerConfig(url=server_url, scope="backend")
+                    for server_url in server_urls
+                ]
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load cached MCP servers during initialization: {e}. "
+                    "Starting with no configured tool servers."
+                )
+                self.task_manager.configured_tool_servers = []
+
+    def _get_wormhole_token(self) -> Optional[str]:
+        """Extract wormhole community subtoken from websocket headers."""
+        return extract_bearer_token_from_headers(self.websocket)
 
     def setup_run_settings(self, data: dict[str, Any]):
         if "runSettings" in data:
@@ -224,8 +238,12 @@ class ActionManager:
         self,
         descriptors: list[ToolDescriptor] | None = None,
     ) -> ToolRuntime:
+        # Extract wormhole token from websocket headers
+        wormhole_token = self._get_wormhole_token()
+
         if descriptors is None:
             runtime = ToolRuntime(
+                bearer_token=wormhole_token,
                 tools=[
                     *[
                         ToolDescriptor(
@@ -252,7 +270,7 @@ class ActionManager:
                         )
                         for server_url, local_tools in self.task_manager.discovered_local_mcp_tools.items()
                     ],
-                ]
+                ],
             )
             return attach_local_mcp_tools(self.websocket, runtime)
 
@@ -267,13 +285,14 @@ class ActionManager:
             selected_descriptors.append(descriptor)
 
         runtime = ToolRuntime(
+            bearer_token=wormhole_token,
             tools=[
                 *selected_descriptors,
                 *resolve_builtin_tool_descriptors(
                     selected_builtin_tool_ids,
                     self.builtin_tool_definitions,
                 ),
-            ]
+            ],
         )
         return attach_local_mcp_tools(self.websocket, runtime)
 
@@ -287,9 +306,16 @@ class ActionManager:
         server_list = self._configured_backend_tool_servers()
         for server in server_list:
             try:
-                tool_list = await list_server_tools([server])
+                # Collect the wormhole community subtoken from websocket headers
+                # then pass it as the bearer token
+                wormhole_token = self._get_wormhole_token()
+                tool_list = await list_server_tools(
+                    [server], bearer_token=wormhole_token
+                )
             except Exception as exc:
-                logger.warning(f"Failed to enumerate backend MCP tools from {server}: {exc}")
+                logger.warning(
+                    f"Failed to enumerate backend MCP tools from {server}: {exc}"
+                )
                 continue
 
             tool_names = [name for name, _ in tool_list]
@@ -361,6 +387,26 @@ class ActionManager:
         # Access specific fields
         base_url = agent_backend.base_url
         model = agent_backend.model
+        logger.trace(
+            f"Reporting orchestrator config: backend={agent_backend.backend}, model={model}, base_url={base_url}"
+        )
+
+        # Resync configured_tool_servers with registered servers from SERVERS global
+        # This ensures frontend sees all registered servers, not just the initial list
+        try:
+            backend_server_urls = list_server_urls(
+                bearer_token=self._get_wormhole_token()
+            )
+            self.task_manager.configured_tool_servers = [
+                ToolServerConfig(url=url, scope="backend")
+                for url in backend_server_urls
+            ]
+        except Exception as e:
+            logger.warning(
+                f"Failed to resync MCP servers: {e}. Keeping existing configuration."
+            )
+            # Keep existing configured_tool_servers if resync fails
+
         if agent_backend.backend in ["livai", "livchat", "llamame", "alcf"]:
             useCustomUrl = True
         else:
@@ -397,8 +443,7 @@ class ActionManager:
             if isinstance(server, dict) and server.get("url")
         ]
         self.task_manager.configured_tool_servers = [
-            ToolServerConfig.from_json(server)
-            for server in tool_server_payloads
+            ToolServerConfig.from_json(server) for server in tool_server_payloads
         ]
         self.task_manager.discovered_local_mcp_tools = {}
         self.task_manager.selected_tool_runtime = None
@@ -407,6 +452,14 @@ class ActionManager:
         model = data["model"]
         use_custom_url = bool(data.get("useCustomUrl"))
         base_url = data["customUrl"] if use_custom_url and data["customUrl"] else None
+
+        # Treat frontend defaults as "not set" - allow env vars to override
+        if base_url in ["http://localhost:8000/v1", "http://localhost:8000"]:
+            logger.info(
+                f"Received default URL {base_url} from frontend, will check environment variables"
+            )
+            base_url = None
+
         api_key = data["apiKey"] if data["apiKey"] else None
         reasoning_effort = data.get("reasoningEffort") or "medium"
         self.reasoning_effort = reasoning_effort
@@ -437,6 +490,9 @@ class ActionManager:
             )
             # Set up an experiment class for current endpoint
             self.experiment = Experiment(task=None)
+
+            # Report the new orchestrator config to the frontend
+            await self.report_orchestrator_config()
 
             await self.websocket.send_json(
                 {

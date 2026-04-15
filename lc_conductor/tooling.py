@@ -170,6 +170,7 @@ class ToolDescriptor:
 @dataclass
 class ToolRuntime:
     tools: list[ToolDescriptor] = field(default_factory=list)
+    bearer_token: str | None = None
 
     @property
     def tool_names(self) -> list[str]:
@@ -226,9 +227,7 @@ class ToolRuntime:
     @property
     def direct_tools(self) -> list[Any]:
         return [
-            tool.callable_tool
-            for tool in self.tools
-            if tool.callable_tool is not None
+            tool.callable_tool for tool in self.tools if tool.callable_tool is not None
         ]
 
     @property
@@ -244,7 +243,11 @@ class ToolRuntime:
     def mcp_server_allowed_tools(self) -> dict[str, list[str]]:
         tool_map: dict[str, list[str]] = {}
         for tool in self.tools:
-            if tool.kind != "mcp" or tool.execution_scope != "backend" or not tool.server:
+            if (
+                tool.kind != "mcp"
+                or tool.execution_scope != "backend"
+                or not tool.server
+            ):
                 continue
 
             allowed_tool_names = tool.allowed_tool_names
@@ -255,14 +258,19 @@ class ToolRuntime:
             if allowed_tool_names is None:
                 continue
 
-            unique_names = list(dict.fromkeys(name for name in allowed_tool_names if name))
+            unique_names = list(
+                dict.fromkeys(name for name in allowed_tool_names if name)
+            )
             if unique_names:
                 tool_map[tool.server] = unique_names
         return tool_map
 
     def task_kwargs(self) -> dict[str, Any]:
-        return {
+        kwargs = {
             "server_urls": self.mcp_server_urls,
             "mcp_server_allowed_tools": self.mcp_server_allowed_tools,
             "builtin_tools": self.direct_tools,
         }
+        if self.bearer_token is not None:
+            kwargs["bearer_token"] = self.bearer_token
+        return kwargs
