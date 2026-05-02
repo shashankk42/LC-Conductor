@@ -5,8 +5,13 @@
     "sourceType": "module",
     "project": "./lcc_ui_components/tsconfig.json"
   },
-  "plugins": ["@typescript-eslint"],
+  "plugins": ["@typescript-eslint", "react", "react-hooks"],
   "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended", "prettier"],
+  "settings": {
+    "react": {
+      "version": "detect"
+    }
+  },
   "env": {
     "browser": true,
     "es2020": true,
@@ -19,6 +24,11 @@
     "@typescript-eslint/semi": "warn", // Changes "semi" rule violations to warnings
     "@typescript-eslint/quotes": ["warn", "double"], // Example of a rule with options as a warning
     "@typescript-eslint/no-unused-vars": "warn", // Changes "no-unused-vars" to a warning
-    "@typescript-eslint/no-explicit-any": "warn" // Changes "no-explicit-any" to a warning - // eslint-disable-line @typescript-eslint/no-explicit-any
+    "@typescript-eslint/no-explicit-any": "warn", // Changes "no-explicit-any" to a warning - // eslint-disable-line @typescript-eslint/no-explicit-any
+    "react/react-in-jsx-scope": "off",
+    "react-hooks/rules-of-hooks": "warn",
+    "react/no-unescaped-entities": "warn",
+    "react/display-name": "warn",
+    "react/prop-types": "warn"
   }
 }
