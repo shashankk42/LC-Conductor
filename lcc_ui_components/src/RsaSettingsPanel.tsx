@@ -14,6 +14,33 @@ interface RsaSettingsPanelProps {
   onRsaTChange: (value: number) => void;
 }
 
+// Custom hook to manage number input with validation
+const useNumberInput = (value: number, onChange: (val: number) => void, defaultValue: number) => {
+  const [input, setInput] = React.useState(value.toString());
+
+  React.useEffect(() => {
+    setInput(value.toString());
+  }, [value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInput(e.target.value);
+    const num = parseInt(e.target.value);
+    if (!isNaN(num) && num >= 1) {
+      onChange(num);
+    }
+  };
+
+  const handleBlur = () => {
+    const num = parseInt(input);
+    if (isNaN(num) || num < 1) {
+      onChange(defaultValue);
+      setInput(defaultValue.toString());
+    }
+  };
+
+  return { input, handleChange, handleBlur };
+};
+
 export const RsaSettingsPanel: React.FC<RsaSettingsPanelProps> = ({
   useRsa,
   onUseRsaChange,
@@ -26,6 +53,10 @@ export const RsaSettingsPanel: React.FC<RsaSettingsPanelProps> = ({
   rsaT,
   onRsaTChange,
 }) => {
+  const nState = useNumberInput(rsaN, onRsaNChange, 8);
+  const kState = useNumberInput(rsaK, onRsaKChange, 4);
+  const tState = useNumberInput(rsaT, onRsaTChange, 3);
+
   return (
     <div className="glass-panel">
       <div className="flex items-start gap-4">
@@ -78,11 +109,18 @@ export const RsaSettingsPanel: React.FC<RsaSettingsPanelProps> = ({
               <label className="form-label">N (Proposals)</label>
               <input
                 type="number"
-                value={rsaN}
-                onChange={(e) => onRsaNChange(parseInt(e.target.value) || 8)}
+                value={nState.input}
+                onChange={nState.handleChange}
+                onBlur={nState.handleBlur}
                 min="1"
                 max="20"
+                step="1"
                 className="form-input w-full"
+                style={
+                  {
+                    appearance: 'auto',
+                  } as React.CSSProperties
+                }
               />
               <p className="text-xs text-tertiary mt-1">Number of initial proposals to generate</p>
             </div>
@@ -91,11 +129,18 @@ export const RsaSettingsPanel: React.FC<RsaSettingsPanelProps> = ({
               <label className="form-label">K (Subset)</label>
               <input
                 type="number"
-                value={rsaK}
-                onChange={(e) => onRsaKChange(parseInt(e.target.value) || 4)}
+                value={kState.input}
+                onChange={kState.handleChange}
+                onBlur={kState.handleBlur}
                 min="1"
                 max={rsaN}
+                step="1"
                 className="form-input w-full"
+                style={
+                  {
+                    appearance: 'auto',
+                  } as React.CSSProperties
+                }
               />
               <p className="text-xs text-tertiary mt-1">Subset size for aggregation (K ≤ N)</p>
             </div>
@@ -104,11 +149,18 @@ export const RsaSettingsPanel: React.FC<RsaSettingsPanelProps> = ({
               <label className="form-label">T (Steps)</label>
               <input
                 type="number"
-                value={rsaT}
-                onChange={(e) => onRsaTChange(parseInt(e.target.value) || 3)}
+                value={tState.input}
+                onChange={tState.handleChange}
+                onBlur={tState.handleBlur}
                 min="1"
                 max="10"
+                step="1"
                 className="form-input w-full"
+                style={
+                  {
+                    appearance: 'auto',
+                  } as React.CSSProperties
+                }
               />
               <p className="text-xs text-tertiary mt-1">Total aggregation steps</p>
             </div>
