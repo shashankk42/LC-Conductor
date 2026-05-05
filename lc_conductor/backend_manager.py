@@ -91,21 +91,30 @@ class TaskManager:
         tb = "".join(traceback.format_exception(exc))
         msg = f"Background task failed with exception: {type(exc).__name__}: {tb}"
         logger.error(msg)
-        await self.websocket.send_json(
-            {
-                "type": "response",
-                "message": {
-                    "source": "system",
-                    "message": msg,
-                },
-            }
-        )
+
+        # Try to send error to WebSocket, but handle disconnection gracefully
+        try:
+            await self.websocket.send_json(
+                {
+                    "type": "response",
+                    "message": {
+                        "source": "system",
+                        "message": msg,
+                    },
+                }
+            )
+        except (RuntimeError, Exception) as send_error:
+            logger.debug(
+                f"Could not send error to WebSocket (likely closed): {send_error}"
+            )
 
         # Send a stopped message with error details to the websocket so the UI can react
         try:
             await self.websocket.send_json({"type": "complete"})
-        except Exception as send_error:
-            logger.exception(f"Failed to send task error to websocket: {send_error}")
+        except (RuntimeError, Exception) as send_error:
+            logger.debug(
+                f"Could not send complete to WebSocket (likely closed): {send_error}"
+            )
 
     async def run_task(self, coro) -> None:
         await self.cancel_current_task()

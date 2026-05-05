@@ -37,12 +37,16 @@ async def handle_callback_log(message):
             }
             level_str = LEVELS.get(level, level)
             source = f"Logger ({level_str})"
-        await websocket.send_json(
-            {
-                "type": "response",
-                "message": {"source": source, "message": msg, **kwargs},
-            }
-        )
+        try:
+            await websocket.send_json(
+                {
+                    "type": "response",
+                    "message": {"source": source, "message": msg, **kwargs},
+                }
+            )
+        except (RuntimeError, Exception):
+            # WebSocket is closed - silently ignore
+            pass
 
 
 logger.add(handle_callback_log, filter=lambda record: record["level"].name == "INFO")
@@ -88,7 +92,17 @@ class CallbackLogger:
         }
         if "smiles" in kwargs:
             payload["message"]["smiles"] = kwargs["smiles"]
-        await self.websocket.send_json(payload)
+
+        # Try to send, but silently fail if WebSocket is closed
+        try:
+            await self.websocket.send_json(payload)
+        except (RuntimeError, Exception) as e:
+            # WebSocket is closed or disconnected - log to console but don't raise
+            logger.debug(
+                f"Could not send message to WebSocket (likely closed): {str(e)}"
+            )
+            # Unbind the websocket so we don't keep trying to send to it
+            self.websocket = None
 
     async def info(self, message, **kwargs):
         await self._send("INFO", message, **kwargs)
