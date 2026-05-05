@@ -84,7 +84,7 @@ export const RsaSettingsPanel: React.FC<RsaSettingsPanelProps> = ({
 
       {/* RSA Configuration */}
       {useRsa && (
-        <div className="mt-6 pl-8 space-y-4 border-l-2 border-primary/30">
+        <div className="mt-6 pl-8 space-y-4">
           {/* RSA Mode */}
           <div>
             <label className="form-label">Mode</label>
